@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Парсер метрик Джилба для Kotlin</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 40px 20px;
+            background-color: #f4f7f6;
+            color: #333;
+            display: flex;
+            justify-content: center;
+        }
+        .main-container {
+            width: 100%;
+            max-width: 900px;
+            display: flex;
+            flex-direction: column;
+            gap: 25px;
+        }
+        h1 { text-align: center; color: #2c3e50; margin-top: 0; }
+        h2 {
+            color: #2c3e50;
+            margin-top: 0;
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 8px;
+        }
+        .card {
+            background: #fff;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+        textarea {
+            width: 100%;
+            height: 380px;
+            font-family: Consolas, monospace;
+            font-size: 13px;
+            padding: 12px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            resize: vertical;
+        }
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 15px;
+            font-weight: bold;
+            width: 100%;
+            transition: background-color 0.2s;
+        }
+        button:hover { background-color: #2980b9; }
+        button:focus-visible, textarea:focus-visible { outline: 3px solid #9cc9ec; outline-offset: 2px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { border: 1px solid #ddd; padding: 10px 14px; text-align: left; }
+        th { background-color: #f8fafc; }
+        td.val { font-weight: bold; color: #2c3e50; width: 160px; }
+    </style>
+</head>
+<body>
+
+<div class="main-container">
+    <h1>Парсер метрик Джилба (Язык анализа: Kotlin)</h1>
+
+    <div class="card">
+        <h2>Исходный код Kotlin</h2>
+        <textarea id="codeArea" placeholder="Вставьте код на Kotlin сюда..." spellcheck="false"></textarea>
+        <button onclick="analyzeCode()">Рассчитать метрики</button>
+    </div>
+
+    <div class="card">
+        <h2>Метрики Джилба</h2>
+        <table>
+            <thead><tr><th>Метрика</th><th>Значение</th></tr></thead>
+            <tbody>
+            <tr><td>Абсолютная сложность программы CL</td><td id="m_CL" class="val">0</td></tr>
+            <tr><td>Относительная сложность программы cl</td><td id="m_cl" class="val">0</td></tr>
+            <tr><td>Максимальный уровень вложенности условного оператора CLI</td><td id="m_CLI" class="val">0</td></tr>
+            <tr><td>Количество операторов программы S</td><td id="m_S" class="val">0</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    // Удаляет комментарии, строковые и символьные литералы
+    function cleanCode(src) {
+        let out = '', i = 0;
+        const n = src.length;
+        while (i < n) {
+            const c = src[i], d = src[i + 1];
+            if (c === '/' && d === '/') {
+                while (i < n && src[i] !== '\n') i++;
+                continue;
+            }
+            if (c === '/' && d === '*') {
+                let depth = 1;
+                i += 2;
+                while (i < n && depth > 0) {
+                    if (src[i] === '/' && src[i + 1] === '*') { depth++; i += 2; }
+                    else if (src[i] === '*' && src[i + 1] === '/') { depth--; i += 2; }
+                    else { if (src[i] === '\n') out += '\n'; i++; }
+                }
+                out += ' ';
+                continue;
+            }
+            if (src.startsWith('"""', i)) {
+                let j = src.indexOf('"""', i + 3);
+                i = j < 0 ? n : j + 3;
+                out += '"S"';
+                continue;
+            }
+            if (c === '"') {
+                i++;
+                while (i < n && src[i] !== '"' && src[i] !== '\n') {
+                    if (src[i] === '\\') i++;
+                    i++;
+                }
+                i++;
+                out += '"S"';
+                continue;
+            }
+            if (c === "'") {
+                i++;
+                while (i < n && src[i] !== "'" && src[i] !== '\n') {
+                    if (src[i] === '\\') i++;
+                    i++;
+                }
+                i++;
+                out += "'c'";
+                continue;
+            }
+            out += c;
+            i++;
+        }
+        return out;
+    }
+
+    // Склеивает физические строки в логические операторы
+    function buildLines(text) {
+        const raw = text.split('\n').map(s => s.trim()).filter(Boolean);
+        const parens = s => {
+            let d = 0;
+            for (const ch of s) {
+                if (ch === '(' || ch === '[') d++;
+                else if (ch === ')' || ch === ']') d--;
+            }
+            return d;
+        };
+        const res = [];
+        let cur = null;
+        for (const l of raw) {
+            if (cur !== null) {
+                const cont = parens(cur) > 0
+                    || /^(\.|\?\.|\?:|&&|\|\||\{|else\b(?!\s*->))/.test(l)
+                    || /(&&|\|\||,|(?<!\+)\+|[*\/%=.]|\?:)$/.test(cur);
+                if (cont) { cur += ' ' + l; continue; }
+                res.push(cur);
+            }
+            cur = l;
+        }
+        if (cur !== null) res.push(cur);
+        return res;
+    }
+
+    function parseLine(t) {
+        const m = t.match(/^(?:\}\s*)+/);
+        const lead = m ? (m[0].match(/\}/g) || []).length : 0;
+        const rest = m ? t.slice(m[0].length) : t;
+        const opens = (rest.match(/\{/g) || []).length;
+        const closes = (rest.match(/\}/g) || []).length;
+        let d = 0, arrow = -1;
+        for (let i = 0; i < rest.length; i++) {
+            const ch = rest[i];
+            if ('([{'.includes(ch)) d++;
+            else if (')]}'.includes(ch)) d--;
+            else if (d === 0 && ch === '-' && rest[i + 1] === '>') { arrow = i; break; }
+        }
+        return { lead, rest, net: opens - closes, arrow };
+    }
+
+    // Число ветвей-условий when (без ветки else)
+    function countBranches(lines, i) {
+        let depth = lines[i].net, n = 0;
+        for (let j = i + 1; j < lines.length; j++) {
+            depth -= lines[j].lead;
+            if (depth <= 0) break;
+            if (depth === 1 && lines[j].arrow >= 0 && !/^else\s*->/.test(lines[j].rest)) n++;
+            depth += lines[j].net;
+        }
+        return n;
+    }
+
+    // Есть ли у if/for/while тело на той же строке
+    function hasBody(rest, hasIf) {
+        const re = hasIf ? /\bif\s*\(/g : /\b(for|while)\s*\(/g;
+        let m, last = null;
+        while ((m = re.exec(rest)) !== null) last = m;
+        if (!last) return true;
+        let i = last.index + last[0].length, d = 1;
+        while (i < rest.length && d > 0) {
+            if (rest[i] === '(') d++;
+            else if (rest[i] === ')') d--;
+            i++;
+        }
+        return rest.slice(i).trim().length > 0;
+    }
+
+    function computeJilb(src, countLoops) {
+        const lines = buildLines(cleanCode(src)).map(parseLine);
+        const frames = [];
+        let cd = 0, maxLvl = 0, CL = 0, S = 0, pending = null;
+
+        lines.forEach((ln, i) => {
+            const rest = ln.rest;
+            const saved = cd;
+            let temp = false, chain = null;
+
+            if (pending !== null && ln.lead === 0) {
+                cd = Math.max(cd, pending);
+                temp = true;
+            }
+            pending = null;
+
+            for (let k = 0; k < ln.lead; k++) {
+                const f = frames.pop();
+                if (!f) continue;
+                if (k === ln.lead - 1 && f.type === 'if' && /^else\b/.test(rest)) {
+                    cd = f.level;
+                    chain = f.restore;
+                } else {
+                    cd = f.restore;
+                }
+            }
+
+            const hadElse = /^else\b/.test(rest);
+            let body = rest, branch = false;
+            const top = frames[frames.length - 1];
+            if (top && top.type === 'when' && ln.arrow >= 0) {
+                const isDef = /^else\s*->/.test(rest);
+                if (!isDef) top.idx++;
+                cd = top.restore + (isDef ? top.n : top.idx);
+                branch = true;
+                body = rest.slice(ln.arrow + 2);
+            }
+
+            const ifs = (rest.match(/\bif\b/g) || []).length;
+            const isDoWhile = ln.lead > 0 && /^while\b/.test(rest.trim());
+            const isDoStart = /^do\b/.test(rest);
+            const loops = (countLoops && !isDoWhile) ? (rest.match(/\b(for|while)\b/g) || []).length + (isDoStart ? 1 : 0) : 0;
+            const whenM = /\bwhen\b/.test(rest);
+            const origin = chain !== null ? chain : ((temp && !branch) ? saved : cd);
+            const k = ifs + loops;
+
+            if (k > 0) {
+                CL += k;
+                maxLvl = Math.max(maxLvl, cd + k - 1);
+            }
+
+            let whenN = 0;
+            if (whenM) {
+                whenN = ln.net > 0 ? countBranches(lines, i)
+                    : Math.max((rest.match(/->/g) || []).length - (/\belse\s*->/.test(rest) ? 1 : 0), 0);
+                if (whenN > 0) {
+                    CL += whenN;
+                    maxLvl = Math.max(maxLvl, cd + whenN - 1);
+                }
+            }
+
+            if (ln.net > 0) {
+                let main;
+                if (whenM) main = { type: 'when', n: whenN, idx: 0, restore: origin };
+                else if (ifs > 0) main = { type: 'if', level: cd + k, restore: origin };
+                else if (loops > 0) main = { type: 'loop', level: cd + k, restore: origin };
+                else if (hadElse && chain !== null) main = { type: 'else', restore: origin };
+                else main = { type: 'other', restore: origin };
+                if (main.level !== undefined) cd = main.level;
+                frames.push(main);
+                for (let q = 1; q < ln.net; q++) frames.push({ type: 'other', restore: cd });
+            } else {
+                for (let q = 0; q < -ln.net; q++) {
+                    const f = frames.pop();
+                    if (f) cd = f.restore;
+                }
+                if (ln.net === 0) {
+                    if (ifs > 0 || loops > 0) {
+                        if (!hasBody(rest, ifs > 0)) pending = cd + k;
+                    }
+                    if (chain !== null) cd = chain;
+                    else if (temp && !branch) cd = saved;
+                }
+            }
+
+            // Подсчёт операторов программы
+            let c = body;
+            if (!branch) c = c.replace(/^\s*else\b/, '');
+            c = c.replace(/^[\s{})\],]+/, '').replace(/[\s{]+$/, '');
+            if (c && !isDoWhile && !/^(import|package)\b/.test(c) && !/^@\w+$/.test(c)) {
+                S += c.split(';').filter(s => s.trim()).length;
+            }
+        });
+
+        return { CL, S, CLI: maxLvl, cl: S > 0 ? CL / S : 0 };
+    }
+
+    function analyzeCode() {
+        const code = document.getElementById('codeArea').value;
+        const r = computeJilb(code, true);
+        document.getElementById('m_CL').innerText = r.CL;
+        document.getElementById('m_cl').innerText = r.cl.toFixed(2);
+        document.getElementById('m_CLI').innerText = r.CLI;
+        document.getElementById('m_S').innerText = r.S;
+    }
+</script>
+</body>
+</html>
